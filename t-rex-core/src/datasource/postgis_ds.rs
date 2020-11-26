@@ -18,7 +18,6 @@ use std;
 use std::collections::BTreeMap;
 use tile_grid::Extent;
 use tile_grid::Grid;
-use regex::Regex;
 
 #[derive(PartialEq, Clone, Debug)]
 pub enum QueryParam {
@@ -330,10 +329,13 @@ impl PostgisDatasource {
                     layer.tolerance(zoom)
                 ),
                 "POLYGON" | "MULTIPOLYGON" | "CURVEPOLYGON" => {
+                    let empty_geom =
+                        format!("ST_GeomFromText('MULTIPOLYGON EMPTY',{})", layer_srid);
                     format!(
-                        "ST_CollectionExtract(ST_MakeValid(ST_Multi(ST_Buffer(ST_SnapToGrid({}, {}), 0.0))),3)::geometry(MULTIPOLYGON,{})",
+                        "COALESCE(ST_MakeValid(ST_SnapToGrid({}, {})),{})::geometry(MULTIPOLYGON,{})",
                         geom_expr,
                         layer.tolerance(zoom),
+                        empty_geom,
                         layer_srid
                     )
                 }
@@ -494,37 +496,24 @@ impl PostgisDatasource {
 impl DatasourceType for PostgisDatasource {
     /// New instance with connected pool
     fn connected(&self) -> PostgisDatasource {
-        let mut tls_mode = TlsMode::None;
-
-        // Match the sslmode parameter, currently only sslmode=require is supported
-        let sslmode_required_re = Regex::new(r"\??(?i)sslmode=require?(&|$)").unwrap();
-
-        if sslmode_required_re.is_match(self.connection_url.as_ref()) {
-            info!("Connection string contains required SSL mode for Postgres connection");
-            let negotiator = NativeTls::new().unwrap();
-            tls_mode = TlsMode::Require(Box::new(negotiator));
-        }
-        // Remove the sslmode parameter before it goes to the connection manager
-        let replaced = sslmode_required_re.replace_all(self.connection_url.as_ref(), "");
-        let conn_url = replaced.as_ref();
-
         // Emulate TlsMode::Allow (https://github.com/sfackler/rust-postgres/issues/278)
-        let manager =
-            PostgresConnectionManager::new(conn_url, tls_mode).unwrap();
+        let manager = PostgresConnectionManager::new(
+            self.connection_url.parse().unwrap(),
+            Box::new(move |config| config.connect(NoTls)),
+        );
         let pool_size = self.pool_size.unwrap_or(8); // TODO: use number of workers as default pool size
         let pool = r2d2::Pool::builder()
             .max_size(pool_size as u32)
             .build(manager)
             .or_else(|e| match &e.to_string() as &str {
-                c if c.contains("SSL connection is required") ||
-                    c.contains("unable to initialize connections") => {
-                    info!("Couldn't connect with TlsMode::None - retrying with TlsMode::Require");
-                    let negotiator = NativeTls::new().unwrap();
+                "unable to initialize connections" => {
+                    info!("Couldn't connect without TLS - retrying with TLS");
+                    let tls_connector = TlsConnector::builder().build().unwrap();
+                    let tls_connector = MakeTlsConnector::new(tls_connector);
                     let manager = PostgresConnectionManager::new(
-                        conn_url,
-                        TlsMode::Require(Box::new(negotiator)),
-                    )
-                    .unwrap();
+                        self.connection_url.parse().unwrap(),
+                        Box::new(move |config| config.connect(tls_connector.clone())),
+                    );
                     r2d2::Pool::builder()
                         .max_size(pool_size as u32)
                         .build(manager)
