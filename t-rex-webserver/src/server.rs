@@ -9,16 +9,16 @@ use crate::runtime_config::{config_from_args, service_from_args};
 use crate::static_files::StaticFiles;
 use actix_cors::Cors;
 use actix_files as fs;
-use actix_rt;
 use actix_web::dev::BodyEncoding;
 use actix_web::http::{header, ContentEncoding};
 use actix_web::middleware::Compress;
-use actix_web::{middleware, web, App, HttpRequest, guard, HttpResponse, HttpServer, Result};
+use actix_web::{guard, middleware, web, App, HttpRequest, HttpResponse, HttpServer, Result};
 use clap::ArgMatches;
 use log::Level;
 use num_cpus;
 use open;
 use std::collections::HashMap;
+use std::convert::Infallible;
 use std::str;
 use std::str::FromStr;
 
@@ -64,8 +64,8 @@ include!(concat!(env!("OUT_DIR"), "/fonts.rs"));
 /// Example: /fonts/Open%20Sans%20Regular,Arial%20Unicode%20MS%20Regular/0-255.pbf
 async fn fonts_pbf(params: web::Path<(String, String)>) -> Result<HttpResponse> {
     let fontpbfs = fonts();
-    let fontlist = &params.0;
-    let range = &params.1;
+    let fontlist = &params.as_ref().0;
+    let range = &params.as_ref().1;
     let mut fonts = fontlist.split(",").collect::<Vec<_>>();
     fonts.push("Roboto Regular"); // Fallback
     let mut resp = HttpResponse::NotFound().finish();
@@ -95,7 +95,11 @@ async fn tileset_tilejson(
     tileset: web::Path<String>,
     req: HttpRequest,
 ) -> Result<HttpResponse> {
-    let json = service.get_tilejson(&req_baseurl(&req), &tileset).unwrap();
+    let url = req_baseurl(&req);
+    let json =
+        web::block::<_, _, Infallible>(move || Ok(service.get_tilejson(&url, &tileset).unwrap()))
+            .await
+            .unwrap();
     Ok(HttpResponse::Ok().json(json))
 }
 
@@ -112,7 +116,10 @@ async fn tileset_metadata_json(
     service: web::Data<MvtService>,
     tileset: web::Path<String>,
 ) -> Result<HttpResponse> {
-    let json = service.get_mbtiles_metadata(&tileset).unwrap();
+    let json =
+        web::block::<_, _, Infallible>(move || Ok(service.get_mbtiles_metadata(&tileset).unwrap()))
+            .await
+            .unwrap();
     Ok(HttpResponse::Ok().json(json))
 }
 
@@ -122,7 +129,8 @@ async fn tile_pbf(
     params: web::Path<(String, u8, u32, u32)>,
     req: HttpRequest,
 ) -> Result<HttpResponse> {
-    let tileset = &params.0;
+    let params = params.into_inner();
+    let tileset = params.0;
     let z = params.1;
     let x = params.2;
     let y = params.3;
@@ -136,21 +144,29 @@ async fn tile_pbf(
                 .and_then(|headerstr| Some(headerstr.contains("gzip")))
         })
         .unwrap_or(false);
-    let tile = service.tile_cached(tileset, x, y, z, gzip, None);
-    let cache_max_age = config.webserver.cache_control_max_age.unwrap_or(300);
+    let tile = web::block::<_, _, Infallible>(move || {
+        Ok(service.tile_cached(&tileset, x, y, z, gzip, None))
+    })
+    .await;
 
-    let resp = if let Some(tile) = tile {
-        HttpResponse::Ok()
-            .content_type("application/x-protobuf")
-            .if_true(gzip, |r| {
-                // data is already gzip compressed
-                r.encoding(ContentEncoding::Identity)
-                    .header(header::CONTENT_ENCODING, "gzip");
-            })
-            .header(header::CACHE_CONTROL, format!("max-age={}", cache_max_age))
-            .body(tile) // TODO: chunked response
-    } else {
-        HttpResponse::NoContent().finish()
+    let resp = match tile {
+        Ok(Some(tile)) => {
+            let cache_max_age = config.webserver.cache_control_max_age.unwrap_or(300);
+            HttpResponse::Ok()
+                .content_type("application/x-protobuf")
+                .if_true(gzip, |r| {
+                    // data is already gzip compressed
+                    r.encoding(ContentEncoding::Identity)
+                        .header(header::CONTENT_ENCODING, "gzip");
+                })
+                .header(header::CACHE_CONTROL, format!("max-age={}", cache_max_age))
+                .body(tile) // TODO: chunked response
+        }
+        Ok(None) => HttpResponse::NoContent().finish(),
+        Err(e) => {
+            error!("{}", e);
+            HttpResponse::InternalServerError().finish()
+        }
     };
     Ok(resp)
 }
@@ -199,7 +215,7 @@ async fn drilldown_handler(
     Ok(HttpResponse::Ok().json(json))
 }
 
-#[actix_rt::main]
+#[actix_web::main]
 pub async fn webserver(args: ArgMatches<'static>) -> std::io::Result<()> {
     let config = config_from_args(&args);
     let host = config
@@ -216,8 +232,13 @@ pub async fn webserver(args: ArgMatches<'static>) -> std::io::Result<()> {
     let static_dirs = config.webserver.static_.clone();
 
     let mut service = service_from_args(&config, &args);
-    service.prepare_feature_queries();
-    service.init_cache();
+    let service = web::block::<_, _, Infallible>(|| {
+        service.prepare_feature_queries();
+        service.init_cache();
+        Ok(service)
+    })
+    .await
+    .unwrap();
 
     let server = HttpServer::new(move || {
         let mut app = App::new()
@@ -231,10 +252,34 @@ pub async fn webserver(args: ArgMatches<'static>) -> std::io::Result<()> {
                     .allowed_methods(vec!["GET"])
                     .finish(),
             )
-            .service(web::resource("/index.json").route(web::route().guard(guard::Any(guard::Get()).or(guard::Head())).to(mvt_metadata)))
-            .service(web::resource("/fontstacks.json").route(web::route().guard(guard::Any(guard::Get()).or(guard::Head())).to(fontstacks)))
-            .service(web::resource("/fonts.json").route(web::route().guard(guard::Any(guard::Get()).or(guard::Head())).to(fontstacks)))
-            .service(web::resource("/fonts/{fonts}/{range}.pbf").route(web::route().guard(guard::Any(guard::Get()).or(guard::Head())).to(fonts_pbf)));
+            .service(
+                web::resource("/index.json").route(
+                    web::route()
+                        .guard(guard::Any(guard::Get()).or(guard::Head()))
+                        .to(mvt_metadata),
+                ),
+            )
+            .service(
+                web::resource("/fontstacks.json").route(
+                    web::route()
+                        .guard(guard::Any(guard::Get()).or(guard::Head()))
+                        .to(fontstacks),
+                ),
+            )
+            .service(
+                web::resource("/fonts.json").route(
+                    web::route()
+                        .guard(guard::Any(guard::Get()).or(guard::Head()))
+                        .to(fontstacks),
+                ),
+            )
+            .service(
+                web::resource("/fonts/{fonts}/{range}.pbf").route(
+                    web::route()
+                        .guard(guard::Any(guard::Get()).or(guard::Head()))
+                        .to(fonts_pbf),
+                ),
+            );
         for static_dir in &static_dirs {
             let dir = &static_dir.dir;
             if std::path::Path::new(dir).is_dir() {
@@ -246,16 +291,41 @@ pub async fn webserver(args: ArgMatches<'static>) -> std::io::Result<()> {
         }
         app = app
             .service(
-                web::resource("/{tileset}.style.json").route(web::route().guard(guard::Any(guard::Get()).or(guard::Head())).to(tileset_style_json)),
+                web::resource("/{tileset}.style.json").route(
+                    web::route()
+                        .guard(guard::Any(guard::Get()).or(guard::Head()))
+                        .to(tileset_style_json),
+                ),
             )
             .service(
-                web::resource("/{tileset}/metadata.json")
-                    .route(web::route().guard(guard::Any(guard::Get()).or(guard::Head())).to(tileset_metadata_json)),
+                web::resource("/{tileset}/metadata.json").route(
+                    web::route()
+                        .guard(guard::Any(guard::Get()).or(guard::Head()))
+                        .to(tileset_metadata_json),
+                ),
             )
-            .service(web::resource("/{tileset}.json").route(web::route().guard(guard::Any(guard::Get()).or(guard::Head())).to(tileset_tilejson)))
-            .service(web::resource("/{tileset}/{z}/{x}/{y}.pbf").route(web::route().guard(guard::Any(guard::Get()).or(guard::Head())).to(tile_pbf)));
+            .service(
+                web::resource("/{tileset}.json").route(
+                    web::route()
+                        .guard(guard::Any(guard::Get()).or(guard::Head()))
+                        .to(tileset_tilejson),
+                ),
+            )
+            .service(
+                web::resource("/{tileset}/{z}/{x}/{y}.pbf").route(
+                    web::route()
+                        .guard(guard::Any(guard::Get()).or(guard::Head()))
+                        .to(tile_pbf),
+                ),
+            );
         if mvt_viewer {
-            app = app.service(web::resource("/drilldown").route(web::route().guard(guard::Any(guard::Get()).or(guard::Head())).to(drilldown_handler)));
+            app = app.service(
+                web::resource("/drilldown").route(
+                    web::route()
+                        .guard(guard::Any(guard::Get()).or(guard::Head()))
+                        .to(drilldown_handler),
+                ),
+            );
             app = app.default_service(web::to(static_file_handler));
         }
         app

@@ -3,7 +3,12 @@
 
 #### Features
 
+* Support for HTTP HEAD requests (Thanks @sebastian-r-schmidt!)
 * Guarantee valid geometries when simplifying polygons
+
+#### Bug Fixes
+
+* Force compatible WGS84 axis order with GDAL 3
 
 <a name="0.11.0"></a>
 ## 0.11.0 (2020-06-25)

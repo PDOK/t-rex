@@ -9,11 +9,11 @@ use crate::core::layer::Layer;
 use crate::core::Config;
 use crate::datasource::postgis_fields::FeatureRow;
 use crate::datasource::DatasourceType;
-use fallible_iterator::FallibleIterator;
+use native_tls::TlsConnector;
 use postgres::types::{self, ToSql};
-use postgres_native_tls::NativeTls;
+use postgres::NoTls;
+use postgres_native_tls::MakeTlsConnector;
 use r2d2;
-use r2d2_postgres::{PostgresConnectionManager, TlsMode};
 use std;
 use std::collections::BTreeMap;
 use tile_grid::Extent;
@@ -32,6 +32,44 @@ pub enum QueryParam {
 pub struct SqlQuery {
     pub sql: String,
     pub params: Vec<QueryParam>,
+}
+
+// https://github.com/sfackler/r2d2-postgres/issues/19#issuecomment-569438845
+pub struct PostgresConnectionManager {
+    config: postgres::Config,
+    tls_connector:
+        Box<dyn Fn(&postgres::Config) -> Result<postgres::Client, postgres::Error> + Send + Sync>,
+}
+
+impl PostgresConnectionManager {
+    pub fn new(
+        config: postgres::Config,
+        tls_connector: Box<
+            dyn Fn(&postgres::Config) -> Result<postgres::Client, postgres::Error> + Send + Sync,
+        >,
+    ) -> PostgresConnectionManager {
+        PostgresConnectionManager {
+            config,
+            tls_connector,
+        }
+    }
+}
+
+impl r2d2::ManageConnection for PostgresConnectionManager {
+    type Connection = postgres::Client;
+    type Error = postgres::Error;
+
+    fn connect(&self) -> Result<Self::Connection, Self::Error> {
+        (self.tls_connector)(&self.config)
+    }
+
+    fn is_valid(&self, client: &mut Self::Connection) -> Result<(), Self::Error> {
+        client.simple_query("").map(|_| ())
+    }
+
+    fn has_broken(&self, client: &mut Self::Connection) -> bool {
+        client.is_closed()
+    }
 }
 
 #[derive(Clone)]
@@ -108,16 +146,16 @@ impl PostgisDatasource {
             field, table
         );
 
-        let conn = self.conn();
+        let mut conn = self.conn();
         let sql = format!(
             "SELECT DISTINCT GeometryType({}) AS geomtype FROM {}",
             field, table
         );
 
         let mut types: Vec<String> = Vec::new();
-        for row in &conn.query(&sql, &[]).unwrap() {
-            let geomtype = row.get_opt("geomtype");
-            match geomtype.unwrap() {
+        for row in &conn.query(sql.as_str(), &[]).unwrap() {
+            let geomtype = row.try_get("geomtype");
+            match geomtype {
                 Ok(Some(val)) => {
                     types.push(val);
                 }
@@ -147,7 +185,7 @@ impl PostgisDatasource {
             ),
         };
         query = SqlQuery::valid_sql_for_params(&query);
-        let conn = self.conn();
+        let mut conn = self.conn();
         let stmt = conn.prepare(&query);
         match stmt {
             Err(e) => {
@@ -162,17 +200,17 @@ impl PostgisDatasource {
                         let name = col.name().to_string();
                         let ty = col.type_();
                         let cast = match ty {
-                            &types::VARCHAR
-                            | &types::VARCHAR_ARRAY
-                            | &types::TEXT
-                            | &types::CHAR_ARRAY
-                            | &types::FLOAT4
-                            | &types::FLOAT8
-                            | &types::INT2
-                            | &types::INT4
-                            | &types::INT8
-                            | &types::BOOL => String::new(),
-                            &types::NUMERIC => "FLOAT8".to_string(),
+                            &types::Type::VARCHAR
+                            | &types::Type::VARCHAR_ARRAY
+                            | &types::Type::TEXT
+                            | &types::Type::CHAR_ARRAY
+                            | &types::Type::FLOAT4
+                            | &types::Type::FLOAT8
+                            | &types::Type::INT2
+                            | &types::Type::INT4
+                            | &types::Type::INT8
+                            | &types::Type::BOOL => String::new(),
+                            &types::Type::NUMERIC => "FLOAT8".to_string(),
                             _ => match ty.name() {
                                 "geometry" => String::new(),
                                 _ => "TEXT".to_string(),
@@ -190,7 +228,6 @@ impl PostgisDatasource {
                         (name, cast)
                     })
                     .collect();
-                let _ = stmt.finish();
                 cols
             }
         }
@@ -200,16 +237,16 @@ impl PostgisDatasource {
         use postgis::ewkb;
         use postgis::{LineString, Point, Polygon}; // conflicts with core::geom::Point etc.
 
-        let conn = self.conn();
-        let rows = conn.query(&sql, &[]).unwrap();
+        let mut conn = self.conn();
+        let rows = conn.query(sql.as_str(), &[]).unwrap();
         let extpoly = rows
             .into_iter()
             .nth(0)
             .expect("row expected")
-            .get_opt::<_, ewkb::Polygon>("extent");
+            .try_get::<_, ewkb::Polygon>("extent");
         match extpoly {
-            Some(Ok(ref poly)) if poly.rings().len() != 1 => None,
-            Some(Ok(poly)) => {
+            Ok(ref poly) if poly.rings().len() != 1 => None,
+            Ok(poly) => {
                 let p1 = poly.rings().nth(0).unwrap().points().nth(0).unwrap();
                 let p2 = poly.rings().nth(0).unwrap().points().nth(2).unwrap();
                 Some(Extent {
@@ -505,7 +542,7 @@ impl DatasourceType for PostgisDatasource {
     fn detect_layers(&self, detect_geometry_types: bool) -> Vec<Layer> {
         info!("Detecting layers from geometry_columns");
         let mut layers: Vec<Layer> = Vec::new();
-        let conn = self.conn();
+        let mut conn = self.conn();
         let sql = "SELECT * FROM geometry_columns ORDER BY f_table_schema,f_table_name DESC";
         for row in &conn.query(sql, &[]).unwrap() {
             let schema: String = row.get("f_table_schema");
@@ -648,13 +685,13 @@ impl DatasourceType for PostgisDatasource {
     where
         F: FnMut(&dyn Feature),
     {
-        let conn = self.conn();
+        let mut conn = self.conn();
         let query = self.query(&tileset.to_string(), &layer.name, zoom);
         if query.is_none() {
             return 0;
         }
         let query = query.unwrap();
-        let stmt = conn.prepare_cached(&query.sql);
+        let stmt = conn.prepare(&query.sql);
         if let Err(err) = stmt {
             error!("Layer '{}': {}", layer.name, err);
             error!("Query: {}", query.sql);
@@ -669,7 +706,7 @@ impl DatasourceType for PostgisDatasource {
         for param in &query.params {
             match param {
                 &QueryParam::Bbox => {
-                    let mut bbox: Vec<&dyn ToSql> =
+                    let mut bbox: Vec<&(dyn ToSql + Sync)> =
                         vec![&extent.minx, &extent.miny, &extent.maxx, &extent.maxy];
                     params.append(&mut bbox);
                 }
@@ -682,23 +719,22 @@ impl DatasourceType for PostgisDatasource {
         }
 
         let stmt = stmt.unwrap();
-        let trans = conn.transaction().expect("transaction already active");
-        let rows = stmt.lazy_query(&trans, &params.as_slice(), 50);
+        let mut trans = conn.transaction().expect("transaction already active");
+        let rows = trans
+            .bind(&stmt, params.as_slice())
+            .and_then(|portal| trans.query_portal(&portal, 50));
         if let Err(err) = rows {
             error!("Layer '{}': {}", layer.name, err);
             error!("Query: {}", query.sql);
             error!("Param types: {:?}", query.params);
             error!("Param values: {:?}", params);
             return 0;
-        };
+        }
         debug!("Reading features in layer {}", layer.name);
         let mut cnt = 0;
         let query_limit = layer.query_limit.unwrap_or(0);
-        for row in rows.unwrap().iterator() {
-            let feature = FeatureRow {
-                layer: layer,
-                row: &row.unwrap(),
-            };
+        for row in rows.unwrap() {
+            let feature = FeatureRow { layer, row: &row };
             read(&feature);
             cnt += 1;
             if cnt == query_limit as u64 {
