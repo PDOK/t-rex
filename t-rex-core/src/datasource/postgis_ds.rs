@@ -707,11 +707,12 @@ impl DatasourceType for PostgisDatasource {
             }
         }
 
+        let query_limit = layer.query_limit.unwrap_or(0);
         let stmt = stmt.unwrap();
-        let mut trans = conn.transaction().expect("transaction already active");
+        let mut trans = conn.transaction().expect("transaction already active");        
         let rows = trans
             .bind(&stmt, params.as_slice())
-            .and_then(|portal| trans.query_portal(&portal, 50));
+            .and_then(|portal| trans.query_portal(&portal, query_limit as i32));
         if let Err(err) = rows {
             error!("Layer '{}': {}", layer.name, err);
             error!("Query: {}", query.sql);
@@ -721,7 +722,6 @@ impl DatasourceType for PostgisDatasource {
         }
         debug!("Reading features in layer {}", layer.name);
         let mut cnt = 0;
-        let query_limit = layer.query_limit.unwrap_or(0);
         for row in rows.unwrap() {
             let feature = FeatureRow { layer, row: &row };
             read(&feature);
