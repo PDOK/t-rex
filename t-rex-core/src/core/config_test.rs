@@ -14,6 +14,7 @@ fn test_load_config() {
     let config: ApplicationCfg = config.expect("load_config returned Err");
     assert!(config.service.mvt.viewer);
     assert_eq!(config.datasource.len(), 2);
+    assert_eq!(config.datasource[1].open_options, Some(vec!["FOO=BAR".to_string(), "BAZ=QUZ".to_string()]));
     assert_eq!(config.grid.predefined, Some("web_mercator".to_string()));
     assert_eq!(config.tilesets.len(), 1);
     assert_eq!(config.tilesets[0].name, "osm");

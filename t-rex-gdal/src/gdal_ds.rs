@@ -6,7 +6,7 @@
 use crate::gdal_fields::*;
 use gdal::spatial_ref::{CoordTransform, SpatialRef};
 use gdal::vector::Geometry;
-use gdal::Dataset;
+use gdal::{Dataset, DatasetOptions, GdalOpenFlags};
 use std::collections::BTreeMap;
 use std::path::Path;
 use t_rex_core::core::config::DatasourceCfg;
@@ -23,14 +23,18 @@ pub struct GdalDatasource {
     // We don't store the Dataset, because we need mut access for getting layers
     /// SpatialRef WKT for layers which need CoordTransform
     geom_transform: BTreeMap<String, String>,
+    open_options: Vec<String>,
 }
 
 impl GdalDatasource {
-    pub fn new(path: &str) -> GdalDatasource {
-        GdalDatasource {
+    pub fn new(path: &str, open_options: Option<&[String]>) -> GdalDatasource {
+        let open_options_vec: Vec<String> = open_options.map(|s|Vec::from(s)).unwrap_or(Vec::new());
+        let datasource = GdalDatasource {
             path: path.to_string(),
             geom_transform: BTreeMap::new(),
-        }
+            open_options: open_options_vec,
+        };
+        return datasource
     }
 }
 
@@ -40,11 +44,18 @@ impl DatasourceType for GdalDatasource {
         GdalDatasource {
             path: self.path.clone(),
             geom_transform: BTreeMap::new(),
+            open_options: self.open_options.clone(),
         }
     }
     fn detect_layers(&self, _detect_geometry_types: bool) -> Vec<Layer> {
         let mut layers: Vec<Layer> = Vec::new();
-        let dataset = Dataset::open(Path::new(&self.path)).unwrap();
+        let open_options: Vec<&str> = self.open_options.iter().map(|s|s.as_ref()).collect();
+        let dataset_options = DatasetOptions {
+            open_flags: GdalOpenFlags::GDAL_OF_READONLY,
+            open_options: Option::from(open_options.as_slice()),
+            ..Default::default()
+        };
+        let dataset = Dataset::open_ex(Path::new(&self.path), dataset_options).unwrap();
         for gdal_layer in dataset.layers() {
             let name = gdal_layer.name();
             // Create a layer for each geometry field
@@ -218,7 +229,13 @@ impl DatasourceType for GdalDatasource {
     where
         F: FnMut(&dyn Feature),
     {
-        let dataset = Dataset::open(Path::new(&self.path)).unwrap();
+        let open_options: Vec<&str> = self.open_options.iter().map(|s|s.as_ref()).collect();
+        let dataset_options = DatasetOptions {
+            open_flags: GdalOpenFlags::GDAL_OF_READONLY,
+            open_options: Option::from(open_options.as_slice()),
+            ..Default::default()
+        };
+        let dataset = Dataset::open_ex(Path::new(&self.path), dataset_options).unwrap();
         let layer_name = layer.table_name.as_ref().unwrap();
         debug!("retrieve_features layer: {}", layer_name);
         let mut ogr_layer = dataset.layer_by_name(layer_name).unwrap();
@@ -338,7 +355,8 @@ fn transform_extent_tr(
 
 impl<'a> Config<'a, DatasourceCfg> for GdalDatasource {
     fn from_config(ds_cfg: &DatasourceCfg) -> Result<Self, String> {
-        Ok(GdalDatasource::new(ds_cfg.path.as_ref().unwrap()))
+        let open_options : Option<&[String]> = ds_cfg.open_options.as_ref().map(Vec::as_ref);
+        Ok(GdalDatasource::new(ds_cfg.path.as_ref().unwrap(), open_options))
     }
 
     fn gen_config() -> String {

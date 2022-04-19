@@ -172,7 +172,7 @@ impl Datasources {
         }
         if let Some(datasource) = args.value_of("datasource") {
             #[cfg(feature = "with-gdal")]
-            let ds = Some(Datasource::Gdal(GdalDatasource::new(datasource)));
+            let ds = Some(Datasource::Gdal(GdalDatasource::new(datasource, None)));
             #[cfg(not(feature = "with-gdal"))]
             let ds = {
                 error!("GDAL datasource not supported in this build");

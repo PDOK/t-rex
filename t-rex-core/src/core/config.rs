@@ -60,6 +60,7 @@ pub struct DatasourceCfg {
     pub connection_timeout: Option<u64>,
     // GDAL
     pub path: Option<String>,
+    pub open_options: Option<Vec<String>>,
 }
 
 #[derive(Deserialize, Clone, Debug)]

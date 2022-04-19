@@ -45,7 +45,7 @@ fn test_gdal_api() {
 
 #[test]
 fn test_detect_layers() {
-    let ds = GdalDatasource::new("../data/natural_earth.gpkg");
+    let ds = GdalDatasource::new("../data/natural_earth.gpkg", None);
     let layers = ds.detect_layers(true);
     println!("{:?}", layers);
     assert_eq!(layers.len(), 3);
@@ -79,7 +79,7 @@ fn test_gdal_retrieve_points() {
         maxy: 5948635.3,
     };
 
-    let mut ds = GdalDatasource::new("../data/natural_earth.gpkg");
+    let mut ds = GdalDatasource::new("../data/natural_earth.gpkg", None);
     ds.prepare_queries("ts", &layer, grid.srid);
     let mut reccnt = 0;
     ds.retrieve_features("ts", &layer, &extent, 10, &grid, |feat| {
@@ -114,7 +114,7 @@ fn test_coord_transformation() {
     layer.geometry_field = Some(String::from("geom"));
     layer.srid = Some(3857);
     let grid = Grid::wgs84();
-    let mut ds = GdalDatasource::new("../data/natural_earth.gpkg");
+    let mut ds = GdalDatasource::new("../data/natural_earth.gpkg", None);
     ds.prepare_queries("ts", &layer, grid.srid);
 
     let extent_wgs84 = Extent {
@@ -187,7 +187,7 @@ fn test_gdal_retrieve_multilines() {
         .unwrap();
     assert_eq!(gdal_layer.features().count(), 1404);
 
-    let mut ds = GdalDatasource::new("../data/natural_earth.gpkg");
+    let mut ds = GdalDatasource::new("../data/natural_earth.gpkg", None);
     ds.prepare_queries("ts", &layer, grid.srid);
     let mut reccnt = 0;
 
@@ -245,7 +245,7 @@ fn test_gdal_retrieve_multipolys() {
         maxy: 5948635.3,
     };
 
-    let mut ds = GdalDatasource::new("../data/natural_earth.gpkg");
+    let mut ds = GdalDatasource::new("../data/natural_earth.gpkg", None);
     ds.prepare_queries("ds", &layer, grid.srid);
     let mut reccnt = 0;
     ds.retrieve_features("ds", &layer, &extent, 10, &grid, |feat| {
@@ -276,7 +276,7 @@ fn test_gdal_retrieve_multipolys() {
 fn test_no_transform() {
     let mut layer = Layer::new("g1k18");
     layer.table_name = Some(String::from("g1k18"));
-    let ds = GdalDatasource::new("../data/g1k18.shp");
+    let ds = GdalDatasource::new("../data/g1k18.shp", None);
     let ext = ds.layer_extent(&layer, 3857);
     if gdal_version() < 2030000 {
         assert_eq!(

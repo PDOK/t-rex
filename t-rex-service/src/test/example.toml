@@ -10,6 +10,7 @@ dbconn = "{{ env.DBCONN | default(value="postgresql://postgres@127.0.0.1/osm_bui
 [[datasource]]
 name = "natural_earth"
 path = "../data/natural_earth.gpkg"
+open_options = ["FOO=BAR", "BAZ=QUZ"]
 
 [grid]
 predefined = "web_mercator"

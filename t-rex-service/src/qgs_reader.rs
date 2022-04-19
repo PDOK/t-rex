@@ -189,7 +189,7 @@ pub fn read_qgs(fname: &str) -> (Datasources, Tileset) {
             "ogr" => {
                 let info = GdalLayerInfo::from_qgs_ds(fname, dsinfo);
                 layer.table_name = Some(info.layer_name);
-                Datasource::Gdal(GdalDatasource::new(&info.path))
+                Datasource::Gdal(GdalDatasource::new(&info.path, None))
             }
             "postgres" => {
                 let info = PgLayerInfo::from_qgs_ds(dsinfo);
