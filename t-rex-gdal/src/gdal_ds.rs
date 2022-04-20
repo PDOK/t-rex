@@ -6,7 +6,7 @@
 use crate::gdal_fields::*;
 use gdal::spatial_ref::{CoordTransform, SpatialRef};
 use gdal::vector::Geometry;
-use gdal::{Dataset, DatasetOptions, GdalOpenFlags};
+use gdal::{Dataset, DatasetOptions};
 use std::collections::BTreeMap;
 use std::path::Path;
 use t_rex_core::core::config::DatasourceCfg;
@@ -51,7 +51,6 @@ impl DatasourceType for GdalDatasource {
         let mut layers: Vec<Layer> = Vec::new();
         let open_options: Vec<&str> = self.open_options.iter().map(|s|s.as_ref()).collect();
         let dataset_options = DatasetOptions {
-            open_flags: GdalOpenFlags::GDAL_OF_READONLY,
             open_options: Option::from(open_options.as_slice()),
             ..Default::default()
         };
@@ -231,7 +230,6 @@ impl DatasourceType for GdalDatasource {
     {
         let open_options: Vec<&str> = self.open_options.iter().map(|s|s.as_ref()).collect();
         let dataset_options = DatasetOptions {
-            open_flags: GdalOpenFlags::GDAL_OF_READONLY,
             open_options: Option::from(open_options.as_slice()),
             ..Default::default()
         };
