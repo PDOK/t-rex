@@ -46,8 +46,12 @@ assets = [
     ["README.md", "usr/share/doc/t-rex/README", "644"],
 ]
 #depends = "$auto"
-depends = "libssl3, libgdal30"
-revision = "1~jammy"
+depends = "libssl3, libgdal36"
+revision = "1~noble"
+
+[package.metadata.deb.variants.noble]
+depends = "libssl3, libgdal36"
+revision = "1~noble"
 
 [package.metadata.deb.variants.jammy]
 # default: is Ubuntu Jammy Jellyfish 22.04 (LTS) 
