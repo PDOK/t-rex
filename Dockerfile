@@ -19,7 +19,7 @@ RUN echo "export PATH=~/.cargo/bin:$PATH" >> ~/.bashrc
 RUN cd /t-rex && cargo build --release
 
 # actual image
-FROM ubuntu:noble
+FROM ubuntu:plucky
 ENV TZ Europe/Amsterdam
 LABEL MAINTAINER="pdok@kadaster.nl"
 
