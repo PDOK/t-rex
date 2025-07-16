@@ -1,3 +1,6 @@
+> **Deprecation notice**: This software is not maintained anymore. It is replaced by [bbox-tile-server](https://www.bbox.earth/docs/tile-server/).
+> See the [t-rex migration guide](https://www.bbox.earth/docs/tile-server/guides/#migration-from-t-rex) for migrating projects.
+
 t-rex
 =====
 
